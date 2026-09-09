@@ -129,7 +129,7 @@ com.robi.workspace-grid/
 │                            #   and omarchy.clonedFrom: "omarchy.workspaces")
 ├── Grid.qml                 # The bar widget
 ├── README.md                # This file
-├── AGENTS.md                # Dev guide for AI agents modifying this plugin
+├── DEVELOPMENT.md           # Developer guide for contributors
 ├── LICENSE                  # MIT
 ├── bin/
 │   └── omarchy-workspace-grid   # Shared grid navigation engine (bash)

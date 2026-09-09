@@ -1,6 +1,6 @@
-# AGENTS.md — Workspace Grid plugin
+# DEVELOPMENT.md — Workspace Grid plugin
 
-Guide for AI agents (and humans) working on this plugin.
+Developer guide for contributors working on this plugin.
 
 ## What this plugin is
 
