@@ -1,0 +1,76 @@
+{
+ "schemaVersion": 1,
+ "id": "com.robi.workspace-grid",
+ "name": "Workspace Grid",
+ "version": "1.0.0",
+ "author": "robi",
+ "description": "2D grid workspace switcher for the bar that replaces the linear Omarchy workspaces widget. Shows the most recently focused app icon on each workspace. Enable and the grid takes over the built-in workspace slot; disable and omarchy.workspaces returns automatically.",
+ "omarchy": {
+  "clonedFrom": "omarchy.workspaces"
+ },
+ "kinds": [
+  "bar-widget"
+ ],
+ "entryPoints": {
+  "barWidget": "Grid.qml"
+ },
+ "barWidget": {
+  "displayName": "Workspace Grid",
+  "description": "2D grid workspace switcher with app icons, gestures and keys",
+  "category": "Compositor",
+  "allowMultiple": false,
+  "defaultSection": "left",
+  "defaults": {
+   "columns": 3,
+   "rows": 2,
+   "gridSize": 20,
+   "clampEdges": true,
+   "showIcons": true,
+   "alwaysShowNumbers": false
+  },
+  "schema": [
+   {
+    "key": "columns",
+    "type": "integer",
+    "label": "Grid columns",
+    "defaultValue": 3,
+    "description": "Number of workspace columns (workspaces fill left to right, row by row)."
+   },
+   {
+    "key": "rows",
+    "type": "integer",
+    "label": "Grid rows",
+    "defaultValue": 2,
+    "description": "Number of workspace rows."
+   },
+   {
+    "key": "gridSize",
+    "type": "integer",
+    "label": "Cell size (px)",
+    "defaultValue": 20,
+    "description": "Width of each workspace cell in the bar."
+   },
+   {
+    "key": "clampEdges",
+    "type": "boolean",
+    "label": "Clamp at grid edges",
+    "defaultValue": true,
+    "description": "Stop at the grid edge instead of wrapping to the opposite side."
+   },
+   {
+    "key": "showIcons",
+    "type": "boolean",
+    "label": "Show app icons",
+    "defaultValue": true,
+    "description": "Show the most recently focused app's icon on each occupied workspace."
+   },
+   {
+    "key": "alwaysShowNumbers",
+    "type": "boolean",
+    "label": "Always show numbers",
+    "defaultValue": false,
+    "description": "Keep the workspace number visible even when an app icon is shown."
+   }
+  ]
+ }
+}

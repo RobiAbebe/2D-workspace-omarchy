@@ -1,0 +1,217 @@
+#!/bin/bash
+# Build a class -> icon-path JSON index for the workspace grid pager.
+# For each open Hyprland window class it resolves an icon file using, in order:
+#   1. the class as an icon name (direct lookup across every icon theme),
+#   2. the class's StartupWMClass mapping in .desktop files (Icon= value),
+#   3. a curated class alias (e.g. "zen" -> "org.zen-browser.zen"),
+#   4. a generic application icon so tiles are never blank.
+# Prints {"<class>": "file://..."} to stdout.
+
+set -euo pipefail
+
+# ---- Icon search dirs: one entry per *theme* (or pixmaps), so lookups are a
+# few hundred stat() probes, not a full-tree scan. kora first (old setup used
+# it), then other user themes, hicolor, every system theme, then flat pixmaps.
+declare -a THEMES=()
+
+collect_theme_dirs() {
+  local d
+  for d in "$HOME/.local/share/icons/kora" "$HOME/.icons"/*/ "$HOME/.local/share/icons"/*/; do
+    [[ -d $d ]] && THEMES+=("${d%/}")
+  done
+  while IFS= read -r d; do
+    [[ -d $d ]] && THEMES+=("$d")
+  done < <(printf '%s\n' "${XDG_DATA_DIRS:-/usr/local/share:/usr/share}" | tr ':' '\n')
+  for d in /usr/share/icons/*/; do
+    [[ -d $d ]] && THEMES+=("${d%/}")
+  done
+}
+collect_theme_dirs
+THEMES+=("/usr/share/pixmaps")
+
+find_icon() {
+  local name="$1" t s2 cand path best="" bestsc=1000 sc
+  for t in "${THEMES[@]}"; do
+    # Scalable SVG: best quality.
+    cand="$t/scalable/apps/$name.svg"
+    if [[ -f $cand ]]; then path=$cand; sc=0; [[ $sc -lt $bestsc ]] && { best=$path; bestsc=$sc; }; continue; fi
+    cand="$t/apps/scalable/$name.svg"
+    if [[ -f $cand ]]; then path=$cand; sc=0; [[ $sc -lt $bestsc ]] && { best=$path; bestsc=$sc; }; continue; fi
+    # Sized raster (also under an "apps/" wrapper some themes use).
+    for s2 in 512x512 256x256 128x128 64x64 48x48 32x32 24x24 22x22 16x16; do
+      for cand in "$t/$s2/apps/$name.png" "$t/apps/$s2/$name.png" "$t/$s2/apps/$name.svg" "$t/apps/$s2/$name.svg" "$t/$s2/mimetypes/$name.png"; do
+        if [[ -f $cand ]]; then
+          case "$s2" in
+            512x512) sc=1;; 256x256) sc=2;; 128x128) sc=3;; 64x64) sc=4;;
+            48x48) sc=5;; 32x32) sc=6;; 24x24) sc=7;; 22x22) sc=8;; 16x16) sc=9;;
+          esac
+          [[ $sc -lt $bestsc ]] && { best=$cand; bestsc=$sc; }
+        fi
+      done
+    done
+    # Flat pixmaps / theme root.
+    cand="$t/$name.png"; [[ -f $cand ]] && { path=$cand; sc=99; [[ $sc -lt $bestsc ]] && { best=$path; bestsc=$sc; }; }
+    cand="$t/$name.svg"; [[ -f $cand ]] && { path=$cand; sc=99; [[ $sc -lt $bestsc ]] && { best=$path; bestsc=$sc; }; }
+  done
+  if [[ -n $best ]]; then echo "$best"; return 0; fi
+  return 1
+}
+
+# ---- Desktop-entry index (StartupWMClass -> Icon, id/name -> Icon) so the
+# per-class lookups never re-grep the filesystem. One awk pass per directory.
+declare -A WMCLASS_ICON=() ID_ICON=() NAME_ICON=()
+
+index_desktop_entries() {
+  local dir mkc name id icon nc idc key
+  for dir in "$HOME/.local/share/applications" /usr/local/share/applications /usr/share/applications; do
+    [[ -d $dir ]] || continue
+    while IFS=$'\t' read -r kind key value; do
+      [[ -z $kind ]] && continue
+      case "$kind" in
+        wm) WMCLASS_ICON[$key]=$value ;;
+        id) ID_ICON[$key]=$value ;;
+        n) NAME_ICON[$key]=$value ;;
+      esac
+    done < <(awk '
+      FNR == 1 { wm=""; icon=""; name=""; id=FILENAME; sub(/.*\//, "", id); sub(/\.desktop$/, "", id) }
+      /^StartupWMClass=/ { wm=substr($0, index($0, "=") + 1) }
+      /^Icon=/ && icon == "" { icon=substr($0, index($0, "=") + 1) }
+      /^Name=/ && name == "" { name=substr($0, index($0, "=") + 1) }
+      ENDFILE {
+        if (wm  != "") print "wm\t" tolower(wm)  "\t" icon
+        if (id  != "" && icon != "") print "id\t" tolower(id)  "\t" icon
+        if (name!= "" && icon != "") print "n\t" tolower(name) "\t" icon
+      }
+    ' "$dir"/*.desktop 2>/dev/null)
+  done
+}
+index_desktop_entries
+
+wm_icon() {
+  local class="$1"
+  [[ -n ${WMCLASS_ICON[${class,,}]:-} ]] && { echo "${WMCLASS_ICON[${class,,}]}"; return 0; }
+  return 1
+}
+
+# Browser PWA windows carry a class like "chrome-youtube.com__-Default" whose
+# domain is stripped off and matched against desktop entries by name/id so the
+# real web-app icon is used (e.g. "YouTube" -> Icon=youtube). Returns the Icon=
+# value; non-zero if no match.
+pwa_icon() {
+  local class="$1" domain base key icon
+  # Chrome/Chromium/Edge:  chrome<domain>__<profile> or msedge<domain>__<profile>
+  [[ $class =~ ^[^-]+-([^_]+)__ ]] && domain=${BASH_REMATCH[1]} || return 1
+  domain=${domain,,}
+  icon=$(pwa_alias "$domain" || true)
+  base=${domain%%.*}
+  [[ -z $icon && $base != "$domain" ]] && icon=$(pwa_alias "$base" || true)
+  [[ -n $icon ]] && { echo "$icon"; return 0; }
+  icon=${ID_ICON[$domain]:-}
+  if [[ -z $icon ]]; then
+    for key in "${!ID_ICON[@]}"; do
+      if [[ $key == *"$domain"* ]]; then icon=${ID_ICON[$key]}; break; fi
+    done
+  fi
+  if [[ -z $icon && -n ${NAME_ICON[$domain]:-} ]]; then icon=${NAME_ICON[$domain]}; fi
+  if [[ -z $icon ]]; then
+    for key in "${!NAME_ICON[@]}"; do
+      if [[ $key == *"$domain"* ]]; then icon=${NAME_ICON[$key]}; break; fi
+    done
+  fi
+  [[ -z $icon && $domain == *.* ]] && base=${domain%%.*} || base=$domain
+  if [[ -z $icon && $base != "$domain" ]]; then
+    icon=${ID_ICON[$base]:-}
+    if [[ -z $icon ]]; then
+      for key in "${!ID_ICON[@]}"; do
+        if [[ $key == *"$base"* ]]; then icon=${ID_ICON[$key]}; break; fi
+      done
+    fi
+    if [[ -z $icon && -n ${NAME_ICON[$base]:-} ]]; then icon=${NAME_ICON[$base]}; fi
+    if [[ -z $icon ]]; then
+      for key in "${!NAME_ICON[@]}"; do
+        if [[ $key == *"$base"* ]]; then icon=${NAME_ICON[$key]}; break; fi
+      done
+    fi
+  fi
+  [[ -n $icon ]] && { echo "$icon"; return 0; }
+  return 1
+}
+
+# Curated aliases for classes that never match their icon-owner's name.
+aliased_name() {
+  case "$1" in
+    code|codium) echo "com.visualstudio.code" ;;
+    code-oss) echo "com.visualstudio.code.oss" ;;
+    zen|zen-alpha) echo "org.zen-browser.zen" ;;
+    brave-browser) echo "brave-desktop" ;;
+    microsoft-edge|msedge) echo "microsoft-edge" ;;
+    vivaldi-stable) echo "vivaldi" ;;
+    firefox-developer*) echo "firefox-developer-edition" ;;
+    discord) echo "discord" ;;
+    spotify) echo "spotify-client" ;;
+    telegramdesktop) echo "telegram-desktop" ;;
+    dolphin) echo "system-file-manager" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+# Browser-PWA windows (class like "chrome-web.telegram.org__k_-Default") carry
+# a domain in the class that rarely matches any installed .desktop id/name, so
+# map known web-app domains to their actual icon name (only used if the icon
+# file resolves).
+pwa_alias() {
+  local domain="$1" base
+  base=${domain%%.*}
+  case "$domain" in
+    web.telegram.org|www.telegram.org|telegram.org|t.me) echo "org.telegram.desktop"; return 0 ;;
+    web.whatsapp.com|whatsapp.com) echo "whatsapp"; return 0 ;;
+    youtube.com|www.youtube.com|m.youtube.com) echo "youtube"; return 0 ;;
+  esac
+  case "$base" in
+    youtube) echo "youtube"; return 0 ;;
+  esac
+  return 1
+}
+
+generic=$(find_icon "application-x-executable" || true)
+
+# Try each candidate icon name in order; return the first that resolves.
+resolve_icon() {
+  local class="$1" name icon path
+  # 1) curated alias (only if it resolves)
+  name=$(aliased_name "$class")
+  [[ $name != "$class" ]] && { path=$(find_icon "$name" || true); [[ -n $path ]] && { echo "$path"; return 0; }; }
+  # 2) StartupWMClass -> desktop Icon= (class-insensitive so "Cursor" matches "cursor")
+  icon=$(wm_icon "$class" || true)
+  [[ -n $icon ]] && { path=$(find_icon "$icon" || true); [[ -n $path ]] && { echo "$path"; return 0; }; }
+  # 3) browser-PWA domain -> desktop Icon= (web-app icon)
+  icon=$(pwa_icon "$class" || true)
+  [[ -n $icon ]] && { path=$(find_icon "$icon" || true); [[ -n $path ]] && { echo "$path"; return 0; }; }
+  # 4) direct class-as-icon-name
+  path=$(find_icon "$class" || true)
+  [[ -n $path ]] && { echo "$path"; return 0; }
+  return 1
+}
+
+# Capture clients ONCE so both the icon map and the window map come from the
+# same snapshot (avoids a window appearing in one but not the other).
+clients_json=$(hyprctl clients -j 2>/dev/null || echo '[]')
+
+printf '{"icons":{'
+first=1
+jq -r '.[].class' <<<"$clients_json" 2>/dev/null | sort -u | while IFS= read -r class; do
+  [[ -z $class ]] && continue
+
+  path=$(resolve_icon "$class" || true)
+  [[ -z $path ]] && path=$generic
+  [[ -z $path ]] && continue
+
+  if (( first )); then first=0; else printf ','; fi
+  printf '"%s":"file://%s"' "$class" "$path"
+done
+printf '},"windows":'
+# Live window info (workspace, class, most-recent focus) so cells can resolve
+# classes for windows that opened after the shell started (Quickshell's
+# Toplevel.lastIpcObject stays empty for those in this build).
+jq -c '[.[] | {w: .workspace.id, c: .class, f: .focusHistoryID}]' <<<"$clients_json" 2>/dev/null || printf '[]'
+printf '}'
