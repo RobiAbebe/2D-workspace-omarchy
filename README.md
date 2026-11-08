@@ -19,7 +19,11 @@ Workspaces fill the grid **row-major** (left to right, row by row):
 
 - **Grid layout** — `columns` × `rows` cells; workspaces fill left to right,
   then wrap to the next row (configurable, defaults 3 × 2).
-- **Click to focus** — left-click a workspace to switch to it.
+- **Per-monitor workspaces (Omarchy 4.5+)** — each monitor's bar displays its
+  own block of workspaces labeled 1–10 (workspaces 1–10 on monitor 1, 11–20 on
+  monitor 2, etc.), with per-monitor active indicators and app icons.
+- **Click to focus** — left-click a workspace to switch to it (switches monitor
+  focus and activates that workspace).
 - **Right-click to move** — right-click a workspace to move the focused window
   there.
 - **App icons** — each occupied workspace shows the icon of its most recently

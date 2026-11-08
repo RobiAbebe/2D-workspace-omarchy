@@ -6,9 +6,11 @@
 # Ctrl+Alt+Arrow  -> switch to the workspace in that grid direction
 # + move <dir>    -> move the active window to the neighboring workspace
 # COLS/ROWS are tunable via OMARCHY_WS_COLS / OMARCHY_WS_ROWS (defaults 3 / 2).
+# Supports Omarchy 4.5+ per-monitor workspace blocks (10 slots per monitor).
 
 set -euo pipefail
 
+SLOTS=10
 COLS="${OMARCHY_WS_COLS:-3}"
 ROWS="${OMARCHY_WS_ROWS:-2}"
 # Clamp at the grid edges (no cross-row jumps). Set OMARCHY_WS_CLAMP=0 to wrap.
@@ -28,12 +30,24 @@ case "$dir" in
   *) echo "usage: omarchy-workspace-grid [move] <left|right|up|down>" >&2; exit 1 ;;
 esac
 
-current=$(hyprctl activeworkspace -j 2>/dev/null | jq -r '.id')
+ws_json=$(hyprctl activeworkspace -j 2>/dev/null || echo '{"id":1}')
+current=$(jq -r '.id // 1' <<<"$ws_json" 2>/dev/null || echo 1)
 [[ $current =~ ^[0-9]+$ ]] || current=1
 (( current < 1 )) && current=1
 
-row=$(( (current - 1) / COLS ))
-col=$(( (current - 1) % COLS ))
+# Block of 10 owned by this monitor (Omarchy 4.5+ per-monitor workspaces)
+block=$(( (current - 1) / SLOTS ))
+slot=$(( (current - 1) % SLOTS + 1 ))
+
+# Max slots in this grid
+grid_max=$(( COLS * ROWS ))
+if (( grid_max > SLOTS )); then grid_max=$SLOTS; fi
+
+row=$(( (slot - 1) / COLS ))
+col=$(( (slot - 1) % COLS ))
+
+if (( row >= ROWS )); then row=$(( ROWS - 1 )); fi
+if (( col >= COLS )); then col=$(( COLS - 1 )); fi
 
 if (( CLAMP )); then
   case "$dir" in
@@ -51,7 +65,12 @@ else
   esac
 fi
 
-next=$(( row * COLS + col + 1 ))
+new_slot=$(( row * COLS + col + 1 ))
+if (( new_slot > grid_max )); then
+  new_slot=$grid_max
+fi
+
+next=$(( block * SLOTS + new_slot ))
 
 if [[ ${OMARCHY_WS_DRYRUN:-0} == 1 ]]; then
   echo "$current -> $next"
@@ -59,7 +78,9 @@ if [[ ${OMARCHY_WS_DRYRUN:-0} == 1 ]]; then
 fi
 
 if [[ $mode == "move" ]]; then
+  hyprctl dispatch "o.workspaces.move_window(${new_slot})" >/dev/null 2>&1 || \
   hyprctl dispatch "hl.dsp.window.move({ workspace = \"${next}\" })" >/dev/null
 else
+  hyprctl dispatch "o.workspaces.focus(${new_slot})" >/dev/null 2>&1 || \
   hyprctl dispatch "hl.dsp.focus({ workspace = \"${next}\" })" >/dev/null
 fi

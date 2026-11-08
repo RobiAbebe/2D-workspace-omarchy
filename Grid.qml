@@ -17,11 +17,79 @@ BarWidget {
   readonly property bool showIcons: root.setting("showIcons", true) !== false
   readonly property bool alwaysShowNumbers: root.setting("alwaysShowNumbers", false) === true
 
-  readonly property int slotCount: root.vertical ? root.rows : root.columns * root.rows
+  readonly property int slots: 10
+  readonly property int slotCount: Math.min(root.slots, root.vertical ? root.rows : root.columns * root.rows)
 
   // Cell size capped so the whole grid fits the bar height.
   readonly property real cellSize: root.vertical ? root.gridSize : Math.max(
     6, Math.min(root.gridSize, Math.floor((root.barSize - Style.spaceReal(1) * (root.rows - 1)) / root.rows)))
+
+  function findScreen(item) {
+    var cur = item
+    while (cur) {
+      if (cur.screen) return cur.screen
+      if (cur.window && cur.window.screen) return cur.window.screen
+      if (cur.QsWindow && cur.QsWindow.window && cur.QsWindow.window.screen) return cur.QsWindow.window.screen
+      cur = cur.parent
+    }
+    return null
+  }
+
+  property var widgetScreen: findScreen(root)
+  onParentChanged: {
+    var s = findScreen(root)
+    if (s) widgetScreen = s
+  }
+
+  readonly property var monitor: {
+    var s = widgetScreen || (root.QsWindow && root.QsWindow.window ? root.QsWindow.window.screen : null)
+    return s ? Hyprland.monitorFor(s) : Hyprland.focusedMonitor
+  }
+  readonly property string monitorName: root.monitor ? root.monitor.name : ""
+
+  // Connector -> block, from the file Hyprland keeps them in (Omarchy 4.5 per-monitor blocks).
+  property var blocks: ({})
+
+  function readBlocks(text) {
+    var next = {}
+    var lines = String(text || "").split("\n")
+    for (var i = 0; i < lines.length; i++) {
+      var fields = lines[i].split("\t")
+      if (fields.length >= 3 && fields[1] !== "") next[fields[1]] = parseInt(fields[0], 10)
+    }
+    root.blocks = next
+  }
+
+  FileView {
+    id: monitorWorkspacesFile
+    path: (Quickshell.env("XDG_STATE_HOME") || (Quickshell.env("HOME") + "/.local/state")) + "/omarchy/monitor-workspaces"
+    blockLoading: true
+    watchChanges: true
+    printErrors: false
+    onFileChanged: reload()
+    onLoaded: root.readBlocks(text())
+    onLoadFailed: root.readBlocks("")
+  }
+
+  function blockOf(id) {
+    return Math.floor((id - 1) / root.slots)
+  }
+
+  function slotOf(id) {
+    return (id - 1) % root.slots + 1
+  }
+
+  function activeWorkspaceId() {
+    return root.monitor && root.monitor.activeWorkspace ? root.monitor.activeWorkspace.id : -1
+  }
+
+  // Until Hyprland has written the file, the workspace a monitor shows is in its own block.
+  readonly property int block: {
+    var b = root.blocks[root.monitorName]
+    if (b !== undefined) return b
+    var active = root.activeWorkspaceId()
+    return active > 0 ? root.blockOf(active) : 0
+  }
 
   // Window class -> "file://" icon path, refreshed by bin/omarchy-icon-index.
   property var iconCache: ({})
@@ -86,14 +154,20 @@ BarWidget {
     return String(root.iconCache[kind] || "")
   }
 
+  function dispatch(expression) {
+    if (root.bar) root.bar.run("hyprctl dispatch " + Util.shellQuote(expression))
+  }
+
   function focusWorkspace(id) {
-    if (!root.bar) return
-    root.bar.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.focus({ workspace = \"" + id + "\" })"))
+    if (root.blockOf(id) === root.block) {
+      root.dispatch("o.workspaces.focus(" + root.slotOf(id) + ", \"" + root.monitorName + "\")")
+    } else {
+      root.dispatch("hl.dsp.focus({ workspace = \"" + id + "\" })")
+    }
   }
 
   function moveWindowTo(id) {
-    if (!root.bar) return
-    root.bar.run("hyprctl dispatch " + Util.shellQuote("hl.dsp.window.move({ workspace = \"" + id + "\" })"))
+    root.dispatch("hl.dsp.window.move({ workspace = \"" + id + "\" })")
   }
 
   property bool pendingRefresh: false
@@ -174,9 +248,21 @@ BarWidget {
   }
 
   Connections {
+    target: root.monitor
+    function onActiveWorkspaceChanged() {
+      root.iconRevision++
+    }
+  }
+
+  Connections {
     target: Hyprland
     function onRawEvent(event) {
-      switch (event.name) {
+      var name = event ? String(event.name) : ""
+      if (name === "workspacev2" || name === "moveworkspacev2" || name === "changeworkspaceid") {
+        if (Hyprland.refreshMonitors) Hyprland.refreshMonitors()
+        if (Hyprland.refreshWorkspaces) Hyprland.refreshWorkspaces()
+      }
+      switch (name) {
         case "openwindow":
         case "closewindow":
         case "movewindow":
@@ -184,6 +270,9 @@ BarWidget {
           root.requestIconRefresh(200)
           break
         case "workspace":
+        case "workspacev2":
+        case "moveworkspacev2":
+        case "changeworkspaceid":
         case "activewindow":
         case "fullscreen":
           // The class->icon mapping is unchanged; just nudge the cells to
@@ -203,7 +292,12 @@ BarWidget {
 
   // Populate the icon cache immediately at startup (not on the first 3s tick)
   // so every occupied cell shows its icon from the moment the shell appears.
-  Component.onCompleted: root.requestIconRefresh(-1)
+  Component.onCompleted: {
+    if (monitorWorkspacesFile.text()) {
+      root.readBlocks(monitorWorkspacesFile.text())
+    }
+    root.requestIconRefresh(-1)
+  }
 
   readonly property real trailingGap: root.vertical ? 0 : Style.spaceReal(1.5)
 
@@ -226,7 +320,9 @@ BarWidget {
         id: cell
         required property int index
 
-        readonly property int workspaceId: index + 1
+        readonly property int slot: index + 1
+        readonly property int workspaceId: root.block * root.slots + slot
+
         // Quickshell's Hyprland.workspaces model has no change notification, so
         // re-resolve the workspace object on every iconRevision bump (catches
         // workspaces created after the shell started).
@@ -263,7 +359,9 @@ BarWidget {
           return out
         })()
         readonly property bool occupied: windowClasses.length > 0
+        readonly property bool shown: root.activeWorkspaceId() === workspaceId
         readonly property bool focused: Hyprland.focusedWorkspace !== null && Hyprland.focusedWorkspace.id === workspaceId
+        readonly property bool active: shown || focused
 
         Layout.row: root.vertical ? index : Math.floor(index / root.columns)
         Layout.column: root.vertical ? 0 : index % root.columns
@@ -274,10 +372,10 @@ BarWidget {
         // mirroring the classic omarchy.workspaces widget.
         Rectangle {
           anchors.fill: parent
-          visible: cell.focused
+          visible: cell.active
           radius: Math.min(4, parent.height / 2)
-          color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.32)
-          border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.55)
+          color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, cell.focused ? 0.32 : 0.18)
+          border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, cell.focused ? 0.55 : 0.35)
           border.width: 1
         }
 
@@ -291,13 +389,13 @@ BarWidget {
             model: cell.windowClasses
 
             Rectangle {
-                required property string modelData
-                readonly property int tile: Math.max(7, Math.floor(root.cellSize / 3))
+              required property string modelData
+              readonly property int tile: Math.max(7, Math.floor(root.cellSize / 3))
 
               width: tile
               height: tile
               radius: 2
-              color: cell.focused ? Qt.rgba(1, 1, 1, 0.18) : Qt.rgba(1, 1, 1, 0.12)
+              color: cell.active ? Qt.rgba(1, 1, 1, 0.18) : Qt.rgba(1, 1, 1, 0.12)
 
               Image {
                 anchors.fill: parent
@@ -312,15 +410,16 @@ BarWidget {
 
         WidgetButton {
           anchors.fill: parent
+          bar: root.bar
 
-          text: cell.occupied && !root.alwaysShowNumbers ? "" : (workspaceId === 10 ? "0" : String(workspaceId))
-          active: cell.focused
+          text: cell.occupied && !root.alwaysShowNumbers ? "" : (cell.slot === root.slots ? "0" : String(cell.slot))
+          active: cell.active
           useActiveColor: false
-          opacity: cell.occupied || cell.focused ? 1 : 0.4
+          opacity: cell.occupied || cell.active ? 1 : 0.4
           horizontalMargin: 3
           verticalPadding: 2
           fontSize: Math.min(Style.font.body, root.cellSize - 2)
-          tooltipText: "Workspace " + workspaceId
+          tooltipText: "Workspace " + cell.slot
           onPressed: function(buttonState) {
             if (buttonState === Qt.RightButton) root.moveWindowTo(cell.workspaceId)
             else root.focusWorkspace(cell.workspaceId)

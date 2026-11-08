@@ -2,7 +2,7 @@
  "schemaVersion": 1,
  "id": "com.robi.workspace-grid",
  "name": "Workspace Grid",
- "version": "1.0.0",
+ "version": "1.1.0",
  "author": "robi",
  "description": "2D grid workspace switcher for the bar that replaces the linear Omarchy workspaces widget. Shows the most recently focused app icon on each workspace. Enable and the grid takes over the built-in workspace slot; disable and omarchy.workspaces returns automatically.",
  "omarchy": {

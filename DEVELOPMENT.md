@@ -25,10 +25,11 @@ It has three cooperating parts:
   `omarchy.workspaces` on `disable`. Do not manually edit the plugin entry out
   of `shell.json` while testing clones — use `omarchy plugin enable|disable`.
 - **Grid math lives in one place.** `bin/omarchy-workspace-grid` computes the
-  destination workspace from the active one (`row = (current-1) / COLS`,
-  `col = (current-1) % COLS`). `grid.lua` and the widget must agree on the
-  row-major ordering (1 2 3 / 4 5 6). If you change `columns`/`rows` defaults
-  or ordering, update **all three** places.
+  destination workspace from the active one (`block = (current-1)/10`,
+  `slot = (current-1)%10 + 1`, `row = (slot-1) / COLS`, `col = (slot-1) % COLS`).
+  `grid.lua`, `wsanim.lua`, and the widget all support Omarchy 4.5's 10-slot
+  per-monitor workspace blocks (1-10, 11-20, etc.). If you change `columns`/`rows`
+  defaults or ordering, update **all three** places.
 - **Self-locating paths.** `grid.lua` finds its own directory via
   `debug.getinfo(1, "S").source` so the plugin works from any install path.
   Keep that; do not hardcode `~/.local/bin` or the plugin id into engine paths.
